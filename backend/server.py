@@ -1,75 +1,370 @@
-from fastapi import FastAPI, APIRouter
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
 import os
-import logging
-from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List
+import requests
+import asyncio
+import json
+from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_LEFT, TA_CENTER
+from typing import List, Dict, Optional
 import uuid
 from datetime import datetime
+import re
+from pathlib import Path
 
-
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
-
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-# Create the main app without a prefix
 app = FastAPI()
 
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
-
-
-# Define Models
-class StatusCheck(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    client_name: str
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-class StatusCheckCreate(BaseModel):
-    client_name: str
-
-# Add your routes to the router instead of directly to app
-@api_router.get("/")
-async def root():
-    return {"message": "Hello World"}
-
-@api_router.post("/status", response_model=StatusCheck)
-async def create_status_check(input: StatusCheckCreate):
-    status_dict = input.dict()
-    status_obj = StatusCheck(**status_dict)
-    _ = await db.status_checks.insert_one(status_obj.dict())
-    return status_obj
-
-@api_router.get("/status", response_model=List[StatusCheck])
-async def get_status_checks():
-    status_checks = await db.status_checks.find().to_list(1000)
-    return [StatusCheck(**status_check) for status_check in status_checks]
-
-# Include the router in the main app
-app.include_router(api_router)
-
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Google Custom Search API credentials
+GOOGLE_API_KEY = "AIzaSyAsoKcq2DMgtRw-L_3inX9Cq-V6-YNOAVg"
+SEARCH_ENGINE_ID = "2701a7d64a00d47fd"
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+# In-memory storage for job progress
+job_progress = {}
+generated_pdfs = {}
+
+class SearchRequest(BaseModel):
+    topic: str
+
+class MCQData(BaseModel):
+    question: str
+    options: List[str]
+    answer: str
+
+class JobStatus(BaseModel):
+    job_id: str
+    status: str
+    progress: str
+    total_links: Optional[int] = 0
+    processed_links: Optional[int] = 0
+    mcqs_found: Optional[int] = 0
+    pdf_url: Optional[str] = None
+
+def update_job_progress(job_id: str, status: str, progress: str, **kwargs):
+    """Update job progress in memory"""
+    if job_id not in job_progress:
+        job_progress[job_id] = {
+            "job_id": job_id,
+            "status": status,
+            "progress": progress,
+            "total_links": 0,
+            "processed_links": 0,
+            "mcqs_found": 0,
+            "pdf_url": None
+        }
+    
+    job_progress[job_id].update({
+        "status": status,
+        "progress": progress,
+        **kwargs
+    })
+
+async def search_google_custom(topic: str) -> List[str]:
+    """Search Google Custom Search API for Testbook links"""
+    query = f'{topic} Testbook [Solved] "This question was previously asked in" "BPSC CCE (Preliminary)" OR "BPSC Combined" OR "BPSC Prelims"'
+    
+    url = "https://www.googleapis.com/customsearch/v1"
+    params = {
+        "key": GOOGLE_API_KEY,
+        "cx": SEARCH_ENGINE_ID,
+        "q": query,
+        "num": 10  # Get up to 10 results
+    }
+    
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        testbook_links = []
+        if "items" in data:
+            for item in data["items"]:
+                link = item.get("link", "")
+                if "testbook.com" in link:
+                    testbook_links.append(link)
+        
+        return testbook_links
+    except Exception as e:
+        print(f"Error searching Google: {e}")
+        return []
+
+async def scrape_mcq_content(url: str) -> Optional[MCQData]:
+    """Scrape MCQ content from a Testbook page using playwright-stealth"""
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            )
+            page = await context.new_page()
+            
+            # Apply stealth
+            await stealth_async(page)
+            
+            # Navigate to page
+            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            
+            # Wait for content to load
+            await page.wait_for_timeout(2000)
+            
+            # Extract question
+            question_element = await page.query_selector('.questionBody')
+            question = ""
+            if question_element:
+                question = await question_element.inner_text()
+            
+            # Extract options
+            options = []
+            options_element = await page.query_selector('.options-list')
+            if options_element:
+                option_elements = await options_element.query_selector_all('li, div')
+                for option_elem in option_elements:
+                    option_text = await option_elem.inner_text()
+                    if option_text.strip():
+                        options.append(option_text.strip())
+            
+            # Extract answer and solution
+            answer = ""
+            answer_element = await page.query_selector('.answer-card')
+            if answer_element:
+                answer = await answer_element.inner_text()
+            
+            await browser.close()
+            
+            # Return MCQ data if we found content
+            if question and (options or answer):
+                return MCQData(
+                    question=question.strip(),
+                    options=options,
+                    answer=answer.strip()
+                )
+            
+            return None
+            
+    except Exception as e:
+        print(f"Error scraping {url}: {e}")
+        return None
+
+def generate_pdf(mcqs: List[MCQData], topic: str, job_id: str) -> str:
+    """Generate a professionally formatted PDF from MCQ data"""
+    try:
+        # Create PDFs directory if it doesn't exist
+        pdf_dir = Path("/app/backend/pdfs")
+        pdf_dir.mkdir(exist_ok=True)
+        
+        filename = f"Testbook_MCQs_{topic.replace(' ', '_')}_{job_id}.pdf"
+        filepath = pdf_dir / filename
+        
+        # Create PDF document
+        doc = SimpleDocTemplate(str(filepath), pagesize=A4, 
+                              topMargin=1*inch, bottomMargin=1*inch,
+                              leftMargin=1*inch, rightMargin=1*inch)
+        
+        # Get styles
+        styles = getSampleStyleSheet()
+        
+        # Custom styles
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=24,
+            spaceAfter=30,
+            alignment=TA_CENTER,
+        )
+        
+        question_style = ParagraphStyle(
+            'QuestionStyle',
+            parent=styles['Normal'],
+            fontSize=12,
+            spaceAfter=10,
+            leftIndent=0,
+        )
+        
+        option_style = ParagraphStyle(
+            'OptionStyle',
+            parent=styles['Normal'],
+            fontSize=11,
+            spaceAfter=5,
+            leftIndent=20,
+        )
+        
+        answer_style = ParagraphStyle(
+            'AnswerStyle',
+            parent=styles['Normal'],
+            fontSize=11,
+            spaceAfter=20,
+            leftIndent=0,
+        )
+        
+        # Build PDF content
+        story = []
+        
+        # Title page
+        story.append(Paragraph(f"MCQs for: {topic}", title_style))
+        story.append(Spacer(1, 0.5*inch))
+        story.append(Paragraph(f"Generated on: {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
+        story.append(Paragraph(f"Total Questions: {len(mcqs)}", styles['Normal']))
+        story.append(PageBreak())
+        
+        # MCQ content
+        for i, mcq in enumerate(mcqs, 1):
+            # Question number and text
+            story.append(Paragraph(f"<b>{i}. {mcq.question}</b>", question_style))
+            
+            # Options
+            if mcq.options:
+                for j, option in enumerate(mcq.options):
+                    option_letter = chr(ord('A') + j)
+                    story.append(Paragraph(f"{option_letter}. {option}", option_style))
+            
+            # Answer and solution
+            if mcq.answer:
+                story.append(Paragraph("<b>Answer & Solution:</b>", answer_style))
+                story.append(Paragraph(mcq.answer, answer_style))
+            
+            # Add separator line
+            story.append(Spacer(1, 0.2*inch))
+            story.append(Paragraph("_" * 80, styles['Normal']))
+            story.append(Spacer(1, 0.3*inch))
+        
+        # Build PDF
+        doc.build(story)
+        
+        return filename
+        
+    except Exception as e:
+        print(f"Error generating PDF: {e}")
+        raise
+
+async def process_mcq_extraction(job_id: str, topic: str):
+    """Background task to process MCQ extraction"""
+    try:
+        update_job_progress(job_id, "running", f"Searching for '{topic}'...")
+        
+        # Search for links
+        links = await search_google_custom(topic)
+        
+        if not links:
+            update_job_progress(job_id, "completed", f"No results found for '{topic}'. Please try another topic.", 
+                              total_links=0, processed_links=0, mcqs_found=0)
+            return
+        
+        update_job_progress(job_id, "running", f"Found {len(links)} links. Starting extraction...", 
+                          total_links=len(links))
+        
+        # Extract MCQs from each link
+        mcqs = []
+        for i, link in enumerate(links, 1):
+            update_job_progress(job_id, "running", f"Scraping result {i} of {len(links)}...", 
+                              processed_links=i-1)
+            
+            mcq_data = await scrape_mcq_content(link)
+            if mcq_data:
+                mcqs.append(mcq_data)
+                update_job_progress(job_id, "running", f"Scraping result {i} of {len(links)}...", 
+                                  processed_links=i, mcqs_found=len(mcqs))
+            else:
+                update_job_progress(job_id, "running", f"Skipping result {i}: No MCQ found", 
+                                  processed_links=i, mcqs_found=len(mcqs))
+        
+        if not mcqs:
+            update_job_progress(job_id, "completed", f"No MCQs found for '{topic}'. Please try another topic.", 
+                              total_links=len(links), processed_links=len(links), mcqs_found=0)
+            return
+        
+        # Generate PDF
+        update_job_progress(job_id, "running", "Generating PDF...", 
+                          total_links=len(links), processed_links=len(links), mcqs_found=len(mcqs))
+        
+        pdf_filename = generate_pdf(mcqs, topic, job_id)
+        pdf_url = f"/api/download/{pdf_filename}"
+        
+        # Store PDF info
+        generated_pdfs[pdf_filename] = {
+            "filename": pdf_filename,
+            "topic": topic,
+            "mcq_count": len(mcqs),
+            "generated_at": datetime.now().isoformat()
+        }
+        
+        update_job_progress(job_id, "completed", f"PDF generated successfully! Found {len(mcqs)} MCQs.", 
+                          total_links=len(links), processed_links=len(links), 
+                          mcqs_found=len(mcqs), pdf_url=pdf_url)
+        
+    except Exception as e:
+        update_job_progress(job_id, "error", f"Error: {str(e)}")
+
+@app.post("/api/generate-mcq-pdf", response_model=JobStatus)
+async def generate_mcq_pdf(request: SearchRequest, background_tasks: BackgroundTasks):
+    """Start MCQ extraction and PDF generation process"""
+    if not request.topic.strip():
+        raise HTTPException(status_code=400, detail="Topic cannot be empty")
+    
+    job_id = str(uuid.uuid4())
+    
+    # Initialize job progress
+    update_job_progress(job_id, "starting", "Initializing...")
+    
+    # Start background task
+    background_tasks.add_task(process_mcq_extraction, job_id, request.topic)
+    
+    return JobStatus(**job_progress[job_id])
+
+@app.get("/api/job-status/{job_id}", response_model=JobStatus)
+async def get_job_status(job_id: str):
+    """Get the status of a job"""
+    if job_id not in job_progress:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    return JobStatus(**job_progress[job_id])
+
+@app.get("/api/download/{filename}")
+async def download_pdf(filename: str):
+    """Download generated PDF"""
+    file_path = Path("/app/backend/pdfs") / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    return FileResponse(
+        path=str(file_path),
+        filename=filename,
+        media_type='application/pdf'
+    )
+
+@app.get("/api/test-search/{topic}")
+async def test_search(topic: str):
+    """Test endpoint to verify Google Custom Search API"""
+    try:
+        links = await search_google_custom(topic)
+        return {
+            "topic": topic,
+            "links_found": len(links),
+            "links": links[:5]  # Return first 5 links for testing
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "message": "Testbook MCQ Scraper API is running"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
