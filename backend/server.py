@@ -75,35 +75,62 @@ def update_job_progress(job_id: str, status: str, progress: str, **kwargs):
     })
 
 async def search_google_custom(topic: str) -> List[str]:
-    """Search Google Custom Search API for Testbook links"""
+    """Search Google Custom Search API for ALL available Testbook links (paginated)"""
     query = f'{topic} Testbook [Solved] "This question was previously asked in" "BPSC CCE (Preliminary)" OR "BPSC Combined" OR "BPSC Prelims"'
     
-    url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": GOOGLE_API_KEY,
-        "cx": SEARCH_ENGINE_ID,
-        "q": query,
-        "num": 10  # Get up to 10 results as specified
-    }
-    
+    base_url = "https://www.googleapis.com/customsearch/v1"
     headers = {
         "Referer": "https://testbook.com",
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     
+    all_testbook_links = []
+    start_index = 1
+    max_results = 100  # Google Custom Search API limit
+    
     try:
-        response = requests.get(url, params=params, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        
-        testbook_links = []
-        if "items" in data:
+        while start_index <= max_results:
+            params = {
+                "key": GOOGLE_API_KEY,
+                "cx": SEARCH_ENGINE_ID,
+                "q": query,
+                "num": 10,  # Maximum per request
+                "start": start_index
+            }
+            
+            print(f"Fetching results {start_index}-{start_index+9} for topic: {topic}")
+            
+            response = requests.get(base_url, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            
+            if "items" not in data or len(data["items"]) == 0:
+                print(f"No more results found after {start_index-1} results")
+                break
+            
+            # Extract Testbook links from this batch
+            batch_links = []
             for item in data["items"]:
                 link = item.get("link", "")
                 if "testbook.com" in link:
-                    testbook_links.append(link)
+                    batch_links.append(link)
+            
+            all_testbook_links.extend(batch_links)
+            print(f"Found {len(batch_links)} Testbook links in this batch. Total so far: {len(all_testbook_links)}")
+            
+            # Check if we got fewer than 10 results (last page)
+            if len(data["items"]) < 10:
+                print(f"Reached end of results with {len(data['items'])} items in last batch")
+                break
+            
+            start_index += 10
+            
+            # Small delay to be respectful to the API
+            await asyncio.sleep(0.5)
         
-        return testbook_links
+        print(f"Total Testbook links found: {len(all_testbook_links)}")
+        return all_testbook_links
+        
     except Exception as e:
         print(f"Error searching Google: {e}")
         if hasattr(e, 'response') and e.response is not None:
