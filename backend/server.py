@@ -194,7 +194,7 @@ async def scrape_mcq_content(url: str) -> Optional[MCQData]:
         return None
 
 def generate_pdf(mcqs: List[MCQData], topic: str, job_id: str) -> str:
-    """Generate a professionally formatted PDF from MCQ data"""
+    """Generate a professionally formatted PDF from MCQ data with enhanced layout"""
     try:
         # Create PDFs directory if it doesn't exist
         pdf_dir = Path("/app/backend/pdfs")
@@ -203,36 +203,56 @@ def generate_pdf(mcqs: List[MCQData], topic: str, job_id: str) -> str:
         filename = f"Testbook_MCQs_{topic.replace(' ', '_')}_{job_id}.pdf"
         filepath = pdf_dir / filename
         
-        # Create PDF document
+        # Create PDF document with optimized settings for larger content
         doc = SimpleDocTemplate(str(filepath), pagesize=A4, 
-                              topMargin=1*inch, bottomMargin=1*inch,
-                              leftMargin=1*inch, rightMargin=1*inch)
+                              topMargin=0.8*inch, bottomMargin=0.8*inch,
+                              leftMargin=0.8*inch, rightMargin=0.8*inch)
         
         # Get styles
         styles = getSampleStyleSheet()
         
-        # Custom styles
+        # Enhanced custom styles
         title_style = ParagraphStyle(
             'CustomTitle',
             parent=styles['Heading1'],
-            fontSize=24,
+            fontSize=26,
+            spaceAfter=20,
+            alignment=TA_CENTER,
+            textColor='darkblue'
+        )
+        
+        subtitle_style = ParagraphStyle(
+            'CustomSubtitle',
+            parent=styles['Normal'],
+            fontSize=12,
             spaceAfter=30,
             alignment=TA_CENTER,
+            textColor='darkgray'
+        )
+        
+        stats_style = ParagraphStyle(
+            'StatsStyle',
+            parent=styles['Normal'],
+            fontSize=11,
+            spaceAfter=15,
+            alignment=TA_CENTER,
+            textColor='darkgreen'
         )
         
         question_style = ParagraphStyle(
             'QuestionStyle',
             parent=styles['Normal'],
             fontSize=12,
-            spaceAfter=10,
+            spaceAfter=12,
             leftIndent=0,
+            fontName='Helvetica-Bold'
         )
         
         option_style = ParagraphStyle(
             'OptionStyle',
             parent=styles['Normal'],
             fontSize=11,
-            spaceAfter=5,
+            spaceAfter=6,
             leftIndent=20,
         )
         
@@ -242,46 +262,92 @@ def generate_pdf(mcqs: List[MCQData], topic: str, job_id: str) -> str:
             fontSize=11,
             spaceAfter=20,
             leftIndent=0,
+            textColor='darkgreen'
         )
         
         # Build PDF content
         story = []
         
-        # Title page
-        story.append(Paragraph(f"MCQs for: {topic}", title_style))
+        # Enhanced title page
+        story.append(Paragraph(f"📚 Comprehensive MCQ Collection", title_style))
+        story.append(Paragraph(f"Topic: <b>{topic}</b>", subtitle_style))
+        story.append(Spacer(1, 0.3*inch))
+        
+        # Statistics section
+        story.append(Paragraph("📊 <b>Collection Statistics</b>", stats_style))
+        story.append(Paragraph(f"📝 Total Questions: <b>{len(mcqs)}</b>", stats_style))
+        story.append(Paragraph(f"📅 Generated on: <b>{datetime.now().strftime('%B %d, %Y at %I:%M %p')}</b>", stats_style))
+        story.append(Paragraph(f"🔍 Source: <b>Testbook.com (Comprehensive Search)</b>", stats_style))
+        
+        # Add some decorative spacing
         story.append(Spacer(1, 0.5*inch))
-        story.append(Paragraph(f"Generated on: {datetime.now().strftime('%B %d, %Y')}", styles['Normal']))
-        story.append(Paragraph(f"Total Questions: {len(mcqs)}", styles['Normal']))
+        story.append(Paragraph("─" * 80, styles['Normal']))
         story.append(PageBreak())
         
-        # MCQ content
-        for i, mcq in enumerate(mcqs, 1):
-            # Question number and text
-            story.append(Paragraph(f"<b>{i}. {mcq.question}</b>", question_style))
-            
-            # Options
-            if mcq.options:
-                for j, option in enumerate(mcq.options):
-                    option_letter = chr(ord('A') + j)
-                    story.append(Paragraph(f"{option_letter}. {option}", option_style))
-            
-            # Answer and solution
-            if mcq.answer:
-                story.append(Paragraph("<b>Answer & Solution:</b>", answer_style))
-                story.append(Paragraph(mcq.answer, answer_style))
-            
-            # Add separator line
+        # Table of Contents (for large collections)
+        if len(mcqs) > 20:
+            story.append(Paragraph("📋 <b>Table of Contents</b>", question_style))
             story.append(Spacer(1, 0.2*inch))
-            story.append(Paragraph("_" * 80, styles['Normal']))
+            
+            for i, mcq in enumerate(mcqs, 1):
+                # Truncate long questions for TOC
+                question_preview = mcq.question[:80] + "..." if len(mcq.question) > 80 else mcq.question
+                story.append(Paragraph(f"{i}. {question_preview}", option_style))
+            
+            story.append(PageBreak())
+        
+        # MCQ content with enhanced formatting
+        for i, mcq in enumerate(mcqs, 1):
+            # Question header with number
+            story.append(Paragraph(f"<b>Question {i} of {len(mcqs)}</b>", question_style))
+            story.append(Spacer(1, 0.1*inch))
+            
+            # Question text with better formatting
+            question_text = mcq.question.replace('\n', '<br/>')
+            story.append(Paragraph(f"<b>Q{i}:</b> {question_text}", question_style))
+            story.append(Spacer(1, 0.1*inch))
+            
+            # Options with improved styling
+            if mcq.options:
+                story.append(Paragraph("<b>Options:</b>", option_style))
+                for j, option in enumerate(mcq.options):
+                    option_letter = chr(ord('A') + j) if j < 26 else f"Option {j+1}"
+                    option_text = option.replace('\n', '<br/>')
+                    story.append(Paragraph(f"<b>{option_letter}.</b> {option_text}", option_style))
+            
+            story.append(Spacer(1, 0.15*inch))
+            
+            # Answer and solution with enhanced formatting
+            if mcq.answer:
+                story.append(Paragraph("💡 <b>Answer & Detailed Solution:</b>", answer_style))
+                answer_text = mcq.answer.replace('\n', '<br/>')
+                story.append(Paragraph(answer_text, answer_style))
+            
+            # Add separator for better readability
+            story.append(Spacer(1, 0.2*inch))
+            story.append(Paragraph("─" * 100, styles['Normal']))
             story.append(Spacer(1, 0.3*inch))
+            
+            # Add page break every 3 questions for better organization
+            if i % 3 == 0 and i < len(mcqs):
+                story.append(PageBreak())
+        
+        # Footer section
+        story.append(PageBreak())
+        story.append(Paragraph("🎯 <b>End of MCQ Collection</b>", title_style))
+        story.append(Spacer(1, 0.3*inch))
+        story.append(Paragraph(f"This comprehensive collection contains <b>{len(mcqs)} questions</b> on the topic of <b>'{topic}'</b>.", subtitle_style))
+        story.append(Paragraph("Source: Testbook.com | Generated by Testbook MCQ Extractor", subtitle_style))
+        story.append(Paragraph(f"Generated on: {datetime.now().strftime('%B %d, %Y at %I:%M %p')}", subtitle_style))
         
         # Build PDF
         doc.build(story)
         
+        print(f"✅ PDF generated successfully: {filename} with {len(mcqs)} MCQs")
         return filename
         
     except Exception as e:
-        print(f"Error generating PDF: {e}")
+        print(f"❌ Error generating PDF: {e}")
         raise
 
 async def process_mcq_extraction(job_id: str, topic: str):
