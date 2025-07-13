@@ -282,7 +282,10 @@ function App() {
           {/* Footer */}
           <div className="text-center mt-8 text-gray-600">
             <p className="text-sm">
-              This tool searches Testbook using Google Custom Search API and extracts MCQ content for educational purposes.
+              🚀 Enhanced multi-page search: Automatically finds ALL available Testbook MCQs across multiple search pages
+            </p>
+            <p className="text-xs mt-2 text-gray-500">
+              Uses Google Custom Search API with intelligent pagination • Generates comprehensive PDFs with professional formatting
             </p>
           </div>
         </div>
