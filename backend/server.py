@@ -138,17 +138,15 @@ async def scrape_mcq_content(url: str) -> Optional[MCQData]:
             
             # Extract options
             options = []
-            options_element = await page.query_selector('.options-list')
-            if options_element:
-                option_elements = await options_element.query_selector_all('li, div')
-                for option_elem in option_elements:
-                    option_text = await option_elem.inner_text()
-                    if option_text.strip():
-                        options.append(option_text.strip())
+            option_elements = await page.query_selector_all('.options-list li')
+            for option_elem in option_elements:
+                option_text = await option_elem.inner_text()
+                if option_text.strip():
+                    options.append(option_text.strip())
             
             # Extract answer and solution
             answer = ""
-            answer_element = await page.query_selector('.answer-card')
+            answer_element = await page.query_selector('.solution')
             if answer_element:
                 answer = await answer_element.inner_text()
             
