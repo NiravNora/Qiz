@@ -83,11 +83,16 @@ async def search_google_custom(topic: str) -> List[str]:
         "key": GOOGLE_API_KEY,
         "cx": SEARCH_ENGINE_ID,
         "q": query,
-        "num": 10  # Get up to 10 results
+        "num": 10  # Get up to 10 results as specified
+    }
+    
+    headers = {
+        "Referer": "https://testbook.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     }
     
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
         data = response.json()
         
@@ -101,6 +106,9 @@ async def search_google_custom(topic: str) -> List[str]:
         return testbook_links
     except Exception as e:
         print(f"Error searching Google: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"Response status: {e.response.status_code}")
+            print(f"Response text: {e.response.text}")
         return []
 
 async def scrape_mcq_content(url: str) -> Optional[MCQData]:
