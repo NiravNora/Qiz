@@ -87,10 +87,13 @@ function App() {
           {/* Header */}
           <div className="text-center mb-8">
             <h1 className="text-4xl font-bold text-gray-900 mb-2">
-              Testbook MCQ Extractor
+              🔍 Enhanced Testbook MCQ Extractor
             </h1>
-            <p className="text-gray-600">
-              Extract MCQs from Testbook and generate a professional PDF
+            <p className="text-gray-600 mb-2">
+              Extract ALL available MCQs from Testbook across multiple search pages
+            </p>
+            <p className="text-sm text-blue-600 font-medium">
+              ✨ Now searches ALL pages (up to 100 results) automatically!
             </p>
           </div>
 
