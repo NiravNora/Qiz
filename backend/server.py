@@ -285,11 +285,11 @@ def generate_pdf(mcqs: List[MCQData], topic: str, job_id: str) -> str:
         raise
 
 async def process_mcq_extraction(job_id: str, topic: str):
-    """Background task to process MCQ extraction"""
+    """Background task to process MCQ extraction with enhanced multi-page search"""
     try:
-        update_job_progress(job_id, "running", f"Searching for '{topic}'...")
+        update_job_progress(job_id, "running", f"Searching for ALL '{topic}' results across multiple pages...")
         
-        # Search for links
+        # Search for ALL available links (paginated)
         links = await search_google_custom(topic)
         
         if not links:
@@ -297,45 +297,62 @@ async def process_mcq_extraction(job_id: str, topic: str):
                               total_links=0, processed_links=0, mcqs_found=0)
             return
         
-        update_job_progress(job_id, "running", f"Found {len(links)} links. Starting extraction...", 
+        update_job_progress(job_id, "running", f"Found {len(links)} total links across all pages. Starting extraction...", 
                           total_links=len(links))
         
-        # Extract MCQs from each link
+        # Extract MCQs from each link with enhanced progress tracking
         mcqs = []
+        successful_scrapes = 0
+        failed_scrapes = 0
+        
         for i, link in enumerate(links, 1):
-            update_job_progress(job_id, "running", f"Scraping result {i} of {len(links)}...", 
-                              processed_links=i-1)
+            current_progress = f"Scraping result {i} of {len(links)} (Found {len(mcqs)} MCQs so far)..."
+            update_job_progress(job_id, "running", current_progress, 
+                              processed_links=i-1, mcqs_found=len(mcqs))
             
             mcq_data = await scrape_mcq_content(link)
             if mcq_data:
                 mcqs.append(mcq_data)
-                update_job_progress(job_id, "running", f"Scraping result {i} of {len(links)}...", 
+                successful_scrapes += 1
+                update_job_progress(job_id, "running", 
+                                  f"✅ Scraped result {i} of {len(links)} - Found MCQ! Total: {len(mcqs)}", 
                                   processed_links=i, mcqs_found=len(mcqs))
             else:
-                update_job_progress(job_id, "running", f"Skipping result {i}: No MCQ found", 
+                failed_scrapes += 1
+                update_job_progress(job_id, "running", 
+                                  f"⚠️ Skipping result {i} of {len(links)} - No MCQ found. Total found: {len(mcqs)}", 
                                   processed_links=i, mcqs_found=len(mcqs))
+            
+            # Small delay between scrapes to be respectful
+            await asyncio.sleep(1)
         
         if not mcqs:
-            update_job_progress(job_id, "completed", f"No MCQs found for '{topic}'. Please try another topic.", 
+            update_job_progress(job_id, "completed", 
+                              f"No MCQs found for '{topic}' across {len(links)} links. Please try another topic.", 
                               total_links=len(links), processed_links=len(links), mcqs_found=0)
             return
         
-        # Generate PDF
-        update_job_progress(job_id, "running", "Generating PDF...", 
+        # Generate comprehensive PDF
+        update_job_progress(job_id, "running", 
+                          f"Generating comprehensive PDF with {len(mcqs)} MCQs from {len(links)} total links...", 
                           total_links=len(links), processed_links=len(links), mcqs_found=len(mcqs))
         
         pdf_filename = generate_pdf(mcqs, topic, job_id)
         pdf_url = f"/api/download/{pdf_filename}"
         
-        # Store PDF info
+        # Store PDF info with enhanced metadata
         generated_pdfs[pdf_filename] = {
             "filename": pdf_filename,
             "topic": topic,
             "mcq_count": len(mcqs),
+            "total_links_searched": len(links),
+            "successful_scrapes": successful_scrapes,
+            "failed_scrapes": failed_scrapes,
             "generated_at": datetime.now().isoformat()
         }
         
-        update_job_progress(job_id, "completed", f"PDF generated successfully! Found {len(mcqs)} MCQs.", 
+        final_message = f"🎉 PDF generated successfully! Found {len(mcqs)} MCQs from {successful_scrapes} successful scrapes out of {len(links)} total links."
+        update_job_progress(job_id, "completed", final_message, 
                           total_links=len(links), processed_links=len(links), 
                           mcqs_found=len(mcqs), pdf_url=pdf_url)
         
